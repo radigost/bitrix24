@@ -16,6 +16,9 @@
     "pug": "2.0.0-beta11"
   },
   "devDependencies": {
-    "lodash": "^4.17.10"
+    "lodash": "^4.17.10",
+    "nanoid": "^1.0.7",
+    "nanoid-dictionary": "^1.0.1",
+    "qs": "^6.5.2"
   }
 }

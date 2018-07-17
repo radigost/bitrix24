@@ -9,6 +9,7 @@ const crypto = require("crypto");
 const _ = require('lodash');
 var http = require('http');
 var fs = require('fs');
+const bitrix = require('./bitrix');
 
 const processPrice = async () => {
     console.time('total')
@@ -47,137 +48,180 @@ const processPrice = async () => {
                 });
         })
     };
+
+    const generateFields = async (element) => {
+        const date = new Date();
+        const idValue = 'PROPERTY_500';
+        const NOMENCLATURE_TYPE_ID = 334;
+        const generate = require('nanoid/generate');
+        const dictionary = require('nanoid-dictionary');
+        const letters = generate(dictionary.alphabets.english.uppercase, 3);
+        const digits = generate(dictionary.numbers, 6);
+        const fields = {
+            'NAME': element.new.name,
+            'PRICE': element.new.price,
+            'VAT_INCLUDED': element.new.VAT_INCLUDED,
+            'DESCRIPTION': element.new.description,
+            'PROPERTY_198': element.new.article, //article
+            'PROPERTY_494': element.new.url,//ссылка на обисание
+            'PROPERTY_496': date.toISOString(), //дата обновления
+            'PROPERTY_498': `${letters}-${digits}`, //артикул для клиентов
+            'PROPERTY_512': NOMENCLATURE_TYPE_ID, //вид номенклатуры
+            // 'PROPERTY_212': element.new.brand,//бренд
+            'PROPERTY_500': _.get(element, 'old.PROPERTY_500.value', _.get(element, 'new.id')), //id с сайта
+            'ACTIVE': element.new.active,
+        };
+        // fields[idValue] = element.new.id;
+        const querystring = require('qs');
+        let image, detailedImage;
+        const imageExtension = _.last(_.split(element.new.picture_preview_link, '.'));
+        const detailedImageExtension = _.last(_.split(element.new.picture_detail_link, '.'));
+
+        try {
+            image = await
+                axios.get(element.new.picture_preview_link, {responseType: 'arraybuffer'});
+            detailedImage = await
+                axios.get(element.new.picture_detail_link, {responseType: 'arraybuffer'});
+        }
+        catch (e) {
+            // console.warn(e);
+        }
+        finally {
+            if (image) {
+                fields.PREVIEW_PICTURE = {"fileData": [`picture.${imageExtension}`, new Buffer(image.data, 'binary').toString('base64')]}
+            }
+            if (detailedImage) {
+                fields.DETAIL_PICTURE = {"fileData": [`picture.${detailedImageExtension}`, new Buffer(detailedImage.data, 'binary').toString('base64')]}
+            }
+            return fields;
+        }
+
+    };
+    const update = async (element) => {
+        if (element && element.old && element.new) {
+            const id = element.old.ID;
+            const fields = await generateFields(element);
+            await bitrix.crm.product.update(id, fields);
+        }
+        else {
+            console.warn('something wrong - ', {element});
+            return Promise.resolve({data: {result: 'problem in program'}});
+        }
+    };
+    const addNew = async (element) => {
+        if (element && element.new) {
+            try {
+                const fields = await generateFields(element);
+
+                await bitrix.crm.product.add(fields);
+            }
+            catch (e) {
+                console.error(e);
+            }
+        }
+        else {
+            console.warn('something wrong - ', {element});
+            return Promise.resolve({data: {result: 'problem in program'}});
+        }
+    };
     const sortArrays = async (csvData) => {
         console.time('sort arrays');
-        return new Promise((resolve, reject) => {
+        return new Promise(async (resolve, reject) => {
+            let productBrandValues = await bitrix.crm.product.fields();
+            productBrandValues = productBrandValues['PROPERTY_212'];
 
-            const idValue = 'PROPERTY_500'
             const toUpdate = [];
             const toAdd = [];
             let i = 0;
-            const length = csvData.length-1;
-            let timer = setInterval(async () => {
+            // const length = 10;
+            const length = csvData.length - 1;
+            const hasPropertiesToUpdate = (element) => {
+                let res = false;
+                const propertiesToCheck = [
+                    'NAME',
+                    'PRICE',
+                    'VAT_INCLUDED',
+                    'ACTIVE',
+                    // 'PROPERTY_212'
+                ];
+                const propertiesMap = {
+                    'NAME': 'name',
+                    'PRICE': 'price',
+                    'VAT_INCLUDED': 'VAT_INCLUDED',
+                    'ACTIVE': 'active',
+                    'PROPERTY_212': 'brand'
+                };
+                res = propertiesToCheck.reduce((updateDecision, property) => {
+                    if (!updateDecision) {
+                        const newProp = _.get(propertiesMap, [property]);
+                        const newEl = _.get(element, ['new', newProp]);
+                        const oldEl = _.get(element, ['old', property]);
+                        if (oldEl !== newEl) {
+                            updateDecision = true;
+                        }
+                    }
+                    return updateDecision;
+                }, false);
+                return res;
+            };
+            const processRow = async (i, length) => {
                 const percent = i / csvData.length * 100;
-                // console.log(`reading ${i} of ${csvData.length} : ${Math.floor(percent)}}%`);
                 process.stdout.write("\r" + `reading ${i} of ${csvData.length} : ${Math.floor(percent)}%`);
-
                 if (i <= length) {
-                    try {
-                        const res = await axios.get(`https://olrait.bitrix24.ru/rest/34/a198oeo41csw4cou/crm.product.list?filter[${idValue}][value]=${csvData[i]['id']}`);
-                        const result = _.head(res.data.result);
-                        if(result){
-                            toUpdate.push({new: csvData[i], old: result});
-                        }
-                        else{
-                            toAdd.push({new: csvData[i]});
-                        }
-
-                    } catch (err) {
-                        if (err.response.status === 503) {
-                            console.error('too many request, closing app with result', {
-                                exist: toUpdate.length,
-                                nonExist: toAdd.length
+                    setTimeout(async ()=>{
+                        try {
+                            const res = await bitrix.crm.product.list({
+                                filter: {'PROPERTY_500': {value: csvData[i]['id']}},
+                                select: ['ID', 'PROPERTY_500', 'NAME', 'PRICE', 'VAT_INCLUDED', 'PROPERTY_198', 'PROPERTY_496', 'ACTIVE',
+                                    'PROPERTY_212'
+                                ]
                             });
-                            console.error('try to change "timeout" in config.json, current timeout:', CONFIG.timeout / 6000, " мин");
-                            clearInterval(timer);
-                            reject();
+                            const result = _.head(res);
+                            const updateElement = {new: csvData[i], old: result};
+                            if (result) {
+                                if (hasPropertiesToUpdate(updateElement)) {
+                                    await update(updateElement);
+                                }
+                            }
+                            else {
+                                addNew({new: csvData[i]});
+                                // toAdd.push({new: csvData[i]});
+                            }
+
+                        } catch (err) {
+                            if (err.response.status === 503) {
+                                console.error('too many request, closing app with result', {
+                                    exist: toUpdate.length,
+                                    nonExist: toAdd.length
+                                });
+                                console.error('try to change "timeout" in config.json, current timeout:', CONFIG.timeout / 6000, " мин");
+                                clearInterval(timer);
+                                reject();
+                            }
+                            else {
+                                console.error(err);
+                            }
                         }
-                        else {
-                            console.error(err);
+                        finally {
+                            i++;
+                            await processRow(i, length);
                         }
-                    }
-                    finally {
-                        i++;
-                    }
+                    },CONFIG.timeout);
 
                 }
                 else {
-                    console.log({
-                        exist: toUpdate.length,
-                        nonExist: toAdd.length
-                    });
-                    console.timeEnd('sort arrays');
-                    clearInterval(timer);
-                    resolve([toAdd, toUpdate]);
+                    resolve();
                 }
-            }, CONFIG.timeout);
-        })
-    }
+            };
 
+            await processRow(i, length);
+        });
+    };
 
     const csvPath = 'export.csv';
-    // const length = 10;//dev limit of rows
     await download('http://olrait.ru/upload/export_1670813724.csv', csvPath, (res) => console.log(res));
     const csvData = await readCsv(csvPath);
-    let [toAdd, toUpdate] = await sortArrays(csvData);
-
-    const update = async (element) => {
-        if(element && element.old && element.new){
-            const id =  element.old.ID;
-            const PRODUCT_VALUE_ID= 334;
-            const date = new Date();
-
-            const updateElement = {
-                'NAME': element.new.name,
-                'PRICE': element.new.price,
-                'VAT_INCLUDED': element.new.VAT_INCLUDED,
-                'PREVIEW_PICTURE': element.new.picture_preview_link,
-                'DETAIL_PICTURE': element.new.picture_detail_link,
-                'DESCRIPTION': element.new.description,
-                'PROPERTY_198': element.new.article, //article
-                'PROPERTY_494': element.new.url,//ссылка на обисание
-                'PROPERTY_496': date.toISOString(), //дата обновления
-                'PROPERTY_498': element.old['PROPERTY_498']?element.old['PROPERTY_498']:crypto.randomBytes(3 * 4).toString('base64'), //артикул для клиентов
-                'PROPERTY_512':PRODUCT_VALUE_ID //вид номенклатуры
-            }
-
-
-            let url = `https://olrait.bitrix24.ru/rest/34/a198oeo41csw4cou/crm.product.update?id=${id}`;
-            _.forEach(updateElement,(param,paramName)=>{
-                url += `&fields[${encodeURI(paramName)}]=${encodeURI(param)}`
-            });
-            // console.log(url);
-            return axios.post(url);
-        }
-        else{
-            console.warn('something wrong - ',{element})
-            return Promise.resolve({data:{result:'problem in program'}});
-        }
-
-    }
-
-
-    // console.log(toUpdate[0]);
-    try{
-        console.time('update')
-        let i = toUpdate.length-1;
-        let int = setInterval(async ()=>{
-            if(i>=0){
-                const res = await update(toUpdate[i--]);
-                process.stdout.write("\r" + `udate ${i} of ${toUpdate.length} : ${Math.floor(100-100*i/toUpdate.length)}%`);
-                // console.log(i+1,'--',res.data.result);
-            }
-            else{
-                console.log('ended');
-                console.timeEnd('update');
-                console.timeEnd('total');
-                clearInterval(int);
-            }
-        },CONFIG.timeout,i)
-
-    }
-    catch (e) {
-        console.error(e);
-    }
-
-
-
-    // const res = await axios.get('https://olrait.bitrix24.ru/rest/34/a198oeo41csw4cou/crm.productsection.list');
-
-    //article generations
-    // console.log(crypto.randomBytes(3 * 4).toString('base64'));
-    // var shortid = require('shortid');
-    // console.log(shortid.generate());
+    await sortArrays(csvData);
 
 
     // console.log(res.data.result);
