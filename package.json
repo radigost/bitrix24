@@ -17,6 +17,7 @@
   },
   "devDependencies": {
     "lodash": "^4.17.10",
+    "minimist": "^1.2.0",
     "nanoid": "^1.0.7",
     "nanoid-dictionary": "^1.0.1",
     "qs": "^6.5.2"

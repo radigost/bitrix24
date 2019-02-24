@@ -12,7 +12,10 @@ var fs = require('fs');
 const bitrix = require('./bitrix');
 
 const processPrice = async () => {
+
     console.time('total')
+    let productBrandValues = await bitrix.crm.product.fields();
+    productBrandValues = productBrandValues['PROPERTY_212']['values'];
     const download = (url, dest) => {
         return new Promise((resolve, reject) => {
             console.time('download file');
@@ -21,7 +24,7 @@ const processPrice = async () => {
                 response.pipe(file);
                 file.on('finish', function () {
                     console.timeEnd('download file');
-                    file.close(resolve);  // close() is async, call cb after close completes.
+                    file.close(resolve); // close() is async, call cb after close completes.
                 });
             }).on('error', function (err) { // Handle errors
                 fs.unlink(dest); // Delete the file async. (But we don't check the result)
@@ -49,7 +52,7 @@ const processPrice = async () => {
         })
     };
 
-    const generateFields = async (element) => {
+    const generateFields = async (element, ) => {
         const date = new Date();
         const idValue = 'PROPERTY_500';
         const NOMENCLATURE_TYPE_ID = 334;
@@ -63,13 +66,19 @@ const processPrice = async () => {
             'VAT_INCLUDED': element.new.VAT_INCLUDED,
             'DESCRIPTION': element.new.description,
             'PROPERTY_198': element.new.article, //article
-            'PROPERTY_494': element.new.url,//ссылка на обисание
+            'PROPERTY_494': element.new.url, //ссылка на обисание
             'PROPERTY_496': date.toISOString(), //дата обновления
             'PROPERTY_498': `${letters}-${digits}`, //артикул для клиентов
             'PROPERTY_512': NOMENCLATURE_TYPE_ID, //вид номенклатуры
-            // 'PROPERTY_212': element.new.brand,//бренд
+
             'PROPERTY_500': _.get(element, 'old.PROPERTY_500.value', _.get(element, 'new.id')), //id с сайта
             'ACTIVE': element.new.active,
+            //TODO что делать если новый бренд? надо создавать
+            'PROPERTY_212': {
+                'value': _.get(_.find(productBrandValues, {
+                    VALUE: element.new.brand
+                }), 'ID')
+            } //брэнд , присваиваем номер ID
         };
         // fields[idValue] = element.new.id;
         const querystring = require('qs');
@@ -77,21 +86,30 @@ const processPrice = async () => {
         const imageExtension = _.last(_.split(element.new.picture_preview_link, '.'));
         const detailedImageExtension = _.last(_.split(element.new.picture_detail_link, '.'));
 
+
+        // : ,//бренд
+
         try {
             image = await
-                axios.get(element.new.picture_preview_link, {responseType: 'arraybuffer'});
+            axios.get(element.new.picture_preview_link, {
+                responseType: 'arraybuffer'
+            });
             detailedImage = await
-                axios.get(element.new.picture_detail_link, {responseType: 'arraybuffer'});
-        }
-        catch (e) {
+            axios.get(element.new.picture_detail_link, {
+                responseType: 'arraybuffer'
+            });
+        } catch (e) {
             // console.warn(e);
-        }
-        finally {
+        } finally {
             if (image) {
-                fields.PREVIEW_PICTURE = {"fileData": [`picture.${imageExtension}`, new Buffer(image.data, 'binary').toString('base64')]}
+                fields.PREVIEW_PICTURE = {
+                    "fileData": [`picture.${imageExtension}`, new Buffer(image.data, 'binary').toString('base64')]
+                }
             }
             if (detailedImage) {
-                fields.DETAIL_PICTURE = {"fileData": [`picture.${detailedImageExtension}`, new Buffer(detailedImage.data, 'binary').toString('base64')]}
+                fields.DETAIL_PICTURE = {
+                    "fileData": [`picture.${detailedImageExtension}`, new Buffer(detailedImage.data, 'binary').toString('base64')]
+                }
             }
             return fields;
         }
@@ -102,10 +120,15 @@ const processPrice = async () => {
             const id = element.old.ID;
             const fields = await generateFields(element);
             await bitrix.crm.product.update(id, fields);
-        }
-        else {
-            console.warn('something wrong - ', {element});
-            return Promise.resolve({data: {result: 'problem in program'}});
+        } else {
+            console.warn('something wrong - ', {
+                element
+            });
+            return Promise.resolve({
+                data: {
+                    result: 'problem in program'
+                }
+            });
         }
     };
     const addNew = async (element) => {
@@ -114,21 +137,24 @@ const processPrice = async () => {
                 const fields = await generateFields(element);
 
                 await bitrix.crm.product.add(fields);
-            }
-            catch (e) {
+            } catch (e) {
                 console.error(e);
             }
-        }
-        else {
-            console.warn('something wrong - ', {element});
-            return Promise.resolve({data: {result: 'problem in program'}});
+        } else {
+            console.warn('something wrong - ', {
+                element
+            });
+            return Promise.resolve({
+                data: {
+                    result: 'problem in program'
+                }
+            });
         }
     };
     const sortArrays = async (csvData) => {
         console.time('sort arrays');
         return new Promise(async (resolve, reject) => {
-            let productBrandValues = await bitrix.crm.product.fields();
-            productBrandValues = productBrandValues['PROPERTY_212'];
+
 
             const toUpdate = [];
             const toAdd = [];
@@ -142,14 +168,16 @@ const processPrice = async () => {
                     'PRICE',
                     'VAT_INCLUDED',
                     'ACTIVE',
-                    // 'PROPERTY_212'
+                    'PROPERTY_198',
+                    'PROPERTY_212'
                 ];
                 const propertiesMap = {
                     'NAME': 'name',
                     'PRICE': 'price',
                     'VAT_INCLUDED': 'VAT_INCLUDED',
                     'ACTIVE': 'active',
-                    'PROPERTY_212': 'brand'
+                    'PROPERTY_212': 'brand',
+                    'PROPERTY_198': 'article'
                 };
                 res = propertiesToCheck.reduce((updateDecision, property) => {
                     if (!updateDecision) {
@@ -166,25 +194,33 @@ const processPrice = async () => {
             };
             const processRow = async (i, length) => {
                 const percent = i / csvData.length * 100;
-                process.stdout.write("\r" + `reading ${i} of ${csvData.length} : ${Math.floor(percent)}%`);
+                process.stdout.write("\r" + `processing ${i} row of ${csvData.length} : ${Math.floor(percent)}%`);
                 if (i <= length) {
-                    setTimeout(async ()=>{
+                    setTimeout(async () => {
                         try {
                             const res = await bitrix.crm.product.list({
-                                filter: {'PROPERTY_500': {value: csvData[i]['id']}},
-                                select: ['ID', 'PROPERTY_500', 'NAME', 'PRICE', 'VAT_INCLUDED', 'PROPERTY_198', 'PROPERTY_496', 'ACTIVE',
+                                filter: {
+                                    'PROPERTY_500': {
+                                        value: csvData[i]['id']
+                                    }
+                                },
+                                select: ['ID', 'PROPERTY_500', 'PROPERTY_496', 'NAME', 'PRICE', 'VAT_INCLUDED', 'ACTIVE', 'PROPERTY_198',
                                     'PROPERTY_212'
                                 ]
                             });
                             const result = _.head(res);
-                            const updateElement = {new: csvData[i], old: result};
+                            const updateElement = {
+                                new: csvData[i],
+                                old: result
+                            };
                             if (result) {
                                 if (hasPropertiesToUpdate(updateElement)) {
                                     await update(updateElement);
                                 }
-                            }
-                            else {
-                                addNew({new: csvData[i]});
+                            } else {
+                                addNew({
+                                    new: csvData[i]
+                                });
                                 // toAdd.push({new: csvData[i]});
                             }
 
@@ -197,19 +233,16 @@ const processPrice = async () => {
                                 console.error('try to change "timeout" in config.json, current timeout:', CONFIG.timeout / 6000, " мин");
                                 clearInterval(timer);
                                 reject();
-                            }
-                            else {
+                            } else {
                                 console.error(err);
                             }
-                        }
-                        finally {
+                        } finally {
                             i++;
                             await processRow(i, length);
                         }
-                    },CONFIG.timeout);
+                    }, CONFIG.timeout);
 
-                }
-                else {
+                } else {
                     resolve();
                 }
             };
@@ -225,12 +258,12 @@ const processPrice = async () => {
 
 
     // console.log(res.data.result);
-//    ID , NAME, SECTION_ID , CATALOG_ID
-//получить список section crm.productsection.list
-// по каждому новому товару - проверять поле - есть в списке section - если нет - то создавать новое, получать его Id и добавлять в поле товара
+    //    ID , NAME, SECTION_ID , CATALOG_ID
+    //получить список section crm.productsection.list
+    // по каждому новому товару - проверять поле - есть в списке section - если нет - то создавать новое, получать его Id и добавлять в поле товара
 
-//    по старому товару - проверять все поля и менять разные
-//    добавлять дату обновления в каждый товар
+    //    по старому товару - проверять все поля и менять разные
+    //    добавлять дату обновления в каждый товар
 
 
 };
@@ -246,11 +279,13 @@ const deletePack = async (result, next, start, notDeletedLength) => {
             if (notDeletedLength >= length) {
                 start = next;
                 notDeletedLength = 0;
-            }
-            else {
+            } else {
                 notDeletedLength = notDeleted.length + notDeletedLength;
             }
-            resolve({start, notDeletedLength});
+            resolve({
+                start,
+                notDeletedLength
+            });
         };
 
 
@@ -260,20 +295,21 @@ const deletePack = async (result, next, start, notDeletedLength) => {
                 try {
                     const element = result[i++];
                     if (element) {
-                        console.log({i, length}, element['ID']);
-                        const r = await axios.get('https://olrait.bitrix24.ru/rest/34/a198oeo41csw4cou/crm.deal.delete', {params: {id: element.ID}});
-                        console.log(r.data.result);
+                        // console.log({i, length}, element['ID']);
+                        const r = await axios.get('https://olrait.bitrix24.ru/rest/34/a198oeo41csw4cou/crm.product.delete', {
+                            params: {
+                                id: element.ID
+                            }
+                        });
+                        console.log(`deleting element with id ${element['ID']} (${i} of ${length} in a row) - result - ${r.data.result}`);
                     }
-                }
-                catch (e) {
+                } catch (e) {
                     notDeleted.push(result[i]);
-                    console.log(`not deleted - ${i}`)
-                }
-                finally {
+                    console.log(`deleting element with id ${result[i]} (${i} of ${length} in a row) - result - false`);
+                } finally {
 
                 }
-            }
-            else {
+            } else {
                 ress(notDeletedLength);
                 clearInterval(timer);
             }
@@ -283,7 +319,11 @@ const deletePack = async (result, next, start, notDeletedLength) => {
 };
 const deleteAll = async (start = 1, notDeletedLength = 0) => {
     if (start) {
-        const res = await axios.get('https://olrait.bitrix24.ru/rest/34/a198oeo41csw4cou/crm.deal.list?FILTER[<DATE_CREATE]=2018-07-03', {params: {start}});
+        const res = await axios.get('https://olrait.bitrix24.ru/rest/34/a198oeo41csw4cou/crm.product.list?filter[PROPERTY_212][value]=', {
+            params: {
+                start
+            }
+        });
         console.log(res.data.next, res.data.total);
         // start = res.data.next;
 
@@ -295,8 +335,7 @@ const deleteAll = async (start = 1, notDeletedLength = 0) => {
             await deleteAll(start, notDeletedLength);
         }
         console.log('deleted all');
-    }
-    else {
+    } else {
         console.log('delete all')
         // console.log('and left not deleted', notDeleted.length)
     }
@@ -304,8 +343,19 @@ const deleteAll = async (start = 1, notDeletedLength = 0) => {
 console.time('delete all');
 
 
-processPrice();
-// deleteAll();
+
+
+
+var parseArgs = require('minimist');
+var argv = parseArgs(process.argv.slice(2), opts = {})
+
+if (argv.action === 'delete') {
+    deleteAll();
+} else if (argv.action === 'update') {
+    if (argv.target === 'price') {
+        processPrice();
+    }
+}
 //
 // var indexRouter = require('./routes/index');
 // // var usersRouter = require('./routes/users');
